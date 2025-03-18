@@ -1,0 +1,433 @@
+---
+title: "141A Project"
+author: "Dylan Sidhu"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("/Users/dylansidhu/Desktop/STA 141A")
+```
+
+```{r data, echo = FALSE}
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('./STA141AProject/Data/session',i,'.rds',sep=''))
+}
+
+```
+
+## Abstract: 
+Throughout this dataset we found insights and understanding of the correlation between many of the different variables and the reponsive variable (feedback type). WE found insight into understanding the structure of the report and the make up of it through the multiple different variables. Specifically the impact of spikes throughout the trials, as well as the understanding of the brain area and how that comes into play. Then you see that decision of using the spikes and the contrasts as the main variables in the models, as well as the newly created dataset that was then used in order to train the model. Finally you see the creation of the model and the not great performance the it has with the small sample size, but then you see the better performance that it has with the actual and much larger test dataset.
+
+## Introduction: 
+In this report there are going to be three main phases. The first one is Exploratory Data Analysis, in this portion of the report we will be looking into the makeup of the dataset in order to gain an overall understanding of what it offers and provides. As well as looking a little deeper and looking at a specific session within the dataset and seeing what that has to offer also. Next, we are going to be talking about the Data Integration, this is the part where we are going to be talking about the steps that we want to take in order to create out predictive model. This will show the thought process and the reasoning for why certain variables are used and how we went about creating the model. The last part of the report is the Predictie Modeling portion of the report, where we will both create and test the model that was desgined in the Data Intergration portion of the project.
+
+## Exploratory Data Analysis:
+As a general sense of what the data is lets go over some of the aspects of this dataset and gain a little bit more understanding of what the experiment entailed. First, we are going to start off by talking about the sort of structure of the dataset. There are different variables that contribute to the dataset, some of these include, feedback type, contrast left, contrast right and spikes.
+
+Feedback type is the variable that determines whether or not each trial wa succesful or not, this can be seen with either being 1 for success or -1 for not successful. Contrast left is the variable that is the contrast of the left stimulus, and contrast right is the right stimulus.
+```{r EDA, echo = FALSE}
+suppressMessages(suppressWarnings(library(caret)))
+suppressMessages(suppressWarnings(library(tidyverse)))
+suppressMessages(suppressWarnings(library(knitr)))
+suppressMessages(suppressWarnings(library(dplyr)))
+suppressMessages(suppressWarnings(library(xgboost)))
+suppressMessages(suppressWarnings(library(ROCR)))
+```
+
+
+
+```{r EDA1, echo=FALSE}
+n.session=length(session)
+
+
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+
+
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+  }
+
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+
+```
+
+Table of the sessions and parameters about them
+
+In the table above we can see an overall view of the dataset, and in particular, each individual session that is within the larger dataset. This table shows us the name of each of the session, the date that it took place, the number of trials that took place, the number of trials, brain areas and neurons that were used within the specific session. Here we can see that session 17 had the best sucess rate out of all of the sessions, and we can then also infer and conclude based on the data that mouse named Lederberg was the most successful among all of the mice.
+
+
+```{r, echo = FALSE}
+i.s=2 # indicator for this session
+
+i.t=1 # indicator for this trial 
+
+spk.trial = session[[i.s]]$spks[[i.t]]
+area=session[[i.s]]$brain_area
+
+# We need to first calculate the number of spikes for each neuron during this trial 
+spk.count=apply(spk.trial,1,sum)
+
+# for(i in 1:dim(spk.trial)[1]){
+#  spk.count[i]=sum(spk.trial[i,])
+# }
+
+# Next we take the average of spikes across neurons that live in the same area 
+
+# You can use tapply() or group_by() in dplyr
+
+# tapply():
+spk.average.tapply=tapply(spk.count, area, mean)
+
+
+# dplyr: 
+# To use dplyr you need to create a data frame
+tmp <- data.frame(
+  area = area,
+  spikes = spk.count
+)
+# Calculate the average by group using dplyr
+spk.average.dplyr =tmp %>%
+  group_by(area) %>%
+  summarize(mean= mean(spikes))
+```
+
+
+
+```{r, echo = FALSE} 
+# Wrapping up the function:
+
+average_spike_area<-function(i.t,this_session){
+  spk.trial = this_session$spks[[i.t]]
+  area= this_session$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+  }
+
+
+average_spike_area(1,this_session = session[[i.s]])
+
+```
+
+```{r, echo = FALSE}
+
+n.trial=length(session[[i.s]]$feedback_type)
+n.area=length(unique(session[[i.s]]$brain_area ))
+# Alternatively, you can extract these information in the meta that we created before.
+
+# We will create a data frame that contain the average spike counts for each area, feedback type,  the two contrasts, and the trial id
+
+trial.summary =matrix(nrow=n.trial,ncol= n.area+1+2+1)
+for(i.t in 1:n.trial){
+  trial.summary[i.t,]=c(average_spike_area(i.t,this_session = session[[i.s]]),
+                          session[[i.s]]$feedback_type[i.t],
+                        session[[i.s]]$contrast_left[i.t],
+                        session[[i.s]]$contrast_right[i.s],
+                        i.t)
+}
+
+colnames(trial.summary)=c(names(average_spike_area(i.t,this_session = session[[i.s]])), 'feedback', 'left contr.','right contr.','id' )
+
+# Turning it into a data frame
+trial.summary <- as_tibble(trial.summary)
+ 
+```
+
+Here we can see the average spike count for each area, and in this case, we can see that the highest area is VISpm, and the lowest area is CA1.
+
+```{r, echo = FALSE}
+area.col=rainbow(n=n.area,alpha=0.7)
+
+plot(x=1,y=0, col='white',xlim=c(0,n.trial),ylim=c(0.5,2.2), xlab="Trials",ylab="Average spike counts", main=paste("Spikes per area in Session", i.s))
+
+
+for(i in 1:n.area){
+  lines(y=trial.summary[[i]],x=trial.summary$id,col=area.col[i],lty=2,lwd=1)
+  lines(smooth.spline(trial.summary$id, trial.summary[[i]]),col=area.col[i],lwd=3)
+  }
+legend("topright", 
+  legend = colnames(trial.summary)[1:n.area], 
+  col = area.col, 
+  lty = 1, 
+  cex = 0.8
+)
+
+```
+
+With this plot we take a dive into session 2, and see that based on the brain area, the average number of spike counts. Through this graph there seems to be a relationship between the spikes and the brain area as there are different patterns throughout the brain areas over the course of the many different trials.
+
+```{r, echo = FALSE}
+
+plot.trial<-function(i.t,area, area.col,this_session){
+    
+    spks=this_session$spks[[i.t]];
+    n.neuron=dim(spks)[1]
+    time.points=this_session$time[[i.t]]
+    
+    plot(0,0,xlim=c(min(time.points),max(time.points)),ylim=c(0,n.neuron+1),col='white', xlab='Time (s)',yaxt='n', ylab='Neuron', main=paste('Trial ',i.t, 'feedback', this_session$feedback_type[i.t] ),cex.lab=1.5)
+    for(i in 1:n.neuron){
+        i.a=which(area== this_session$brain_area[i]);
+        col.this=area.col[i.a]
+        
+        ids.spike=which(spks[i,]>0) # find out when there are spikes 
+        if( length(ids.spike)>0 ){
+            points(x=time.points[ids.spike],y=rep(i, length(ids.spike) ),pch='.',cex=2, col=col.this)
+        }
+      
+            
+    }
+    
+legend("topright", 
+  legend = area, 
+  col = area.col, 
+  pch = 16, 
+  cex = 0.8
+  )
+  }
+    
+```
+
+
+
+
+
+## Data Integration:
+
+Based on looking at the overall dataset and gaining insight that we have found in the Exploratory Data Analysis portion of the report. We will consider a couple of variables that will the be later on an used in the final model. These will be the contrasts, the session ID, the average spikes, which is the amount of spikes over time, and finally we will have the feedback type.
+```{r, echo = FALSE}
+
+for(i in 1:18){
+  
+n.trials = length(session[[i]]$feedback_type)
+avg.spikes.all=numeric(n.trials)
+
+
+for(j in 1:n.trials){
+  spks.trial=session[[i]]$spks[[j]] 
+  total.spikes=apply(spks.trial,1,sum)
+  avg.spikes.all[j]=mean(total.spikes)
+  
+}
+session[[i]]$avg.spks=avg.spikes.all
+
+
+}
+
+```
+
+```{r, echo = FALSE}
+
+
+trials.all <- tibble(
+  mouse_name = character(),
+  avg.spks = numeric(),
+  contrast_left = numeric(),
+  contrast_right = numeric(),
+  feedback_type = as.factor(numeric()),
+  session_ID = numeric()
+)
+
+
+for (i in 1:18) {
+  tmp <- session[[i]] 
+  n.trials <- length(tmp$feedback_type)
+  
+  trials <- tibble(
+    mouse_name = rep(tmp$mouse_name, n.trials),
+    avg.spks = tmp$avg.spks,
+    contrast_left = as.numeric(tmp$contrast_left),
+    contrast_right = as.numeric(tmp$contrast_right),
+    feedback_type = as.factor(tmp$feedback_type),
+    session_ID = rep(i, n.trials) 
+  )
+  
+  trials.all <- bind_rows(trials.all, trials)
+}
+
+head(trials.all)
+```
+
+Table of dataset that will be used for the final model
+
+In this table we can see a quick header of the table that I created in order to then feed and train the final model. WE can see that the corresponding variables that were talked abotu each have their own column within the dataset, and subsequently each one of those will be used within the model, where feedback type is the responsive variable. The reason these variables were chosen were because of the insights that we gained about them in the EDA and seeing that there is a great correlation with them. That with the specific session ID which comes into play because there is a correlated success rate of the experiment that you can see, which then adds to the model in order to be a better predictor for the feedback type.
+
+## Predictive Modeling:
+In this portion we are going to create the predictive model based on what was created in the Data Integration part of the report. As well as test or do a small check of the model and how it holds against a small sample size of data.
+
+```{r, echo = FALSE}
+set.seed(15)
+n_trials <- length(trials.all)
+sample <- sample.int(n = n_trials, size = floor(n_trials), replace = F)
+test <- trials.all[sample, ]
+train  <- trials.all[-sample, ]
+```
+
+```{r, echo = FALSE}
+fit1 <- glm(feedback_type~contrast_left+contrast_right+avg.spks+as.factor(session_ID), data=train,family='binomial')
+mod <- glm(feedback_type ~contrast_left+contrast_right+avg.spks+as.factor(session_ID), data = trials.all, family = "binomial")
+summary(mod)
+```
+
+Based on the dataset that we created above called 'trials.all', we then created a logistic regression model based on the variables inside the dataset. The responsive or the y variable that we chose was 'feedback type'. Here you can see the overall variables and what they add to the equation with their estimation and the standard deviation. Another thing that you can see are all of the vraiables that are taken into consideration, those include all of the session IDs, the contrasts and the average amount of spikes, which is something that was created above in the Data Intergration portion of the report.
+
+```{r, echo = FALSE}
+pred1 <- predict(fit1, test %>% select(-feedback_type), type = 'response')
+prediction1 <- factor(pred1 > 0.5, labels = c('-1', '1'))
+mean(prediction1 != test$feedback_type)
+```
+
+The prediction error based on the small sample size of testing was 66.7%
+
+```{r, echo = FALSE}
+cm1 <- confusionMatrix(prediction1, test$feedback_type, dnn = c("Prediction", "Reference"))
+
+plt1 <- as.data.frame(cm1$table)
+
+ggplot(plt1, aes(Reference, Prediction, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels=c("-1","1")) +
+        scale_y_discrete(labels=c("-1","1"))
+```
+
+This is a Confusion Matrix for the small testing of the model
+
+Here we can see that the there are only 2 correctly predicted points and that there were a lot more wrong then there were right, this is something that correlates to the prediction error that was found above for this sample testing.
+
+```{r, echo = FALSE}
+pr = prediction(pred1, test$feedback_type)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+
+# Bias Guess
+pred0 = pred1 * 0 + 1
+pr = prediction(pred0, test$feedback_type)
+prf0 <- performance(pr, measure = "tpr", x.measure = "fpr")
+auc0 <- performance(pr, measure = "auc")
+auc0 <- auc0@y.values[[1]]
+
+
+plot(prf, col = 'blue', main = "ROC Curve")
+plot(prf0, add = TRUE, col = 'red')
+legend("bottomright", legend=c("Model 1", "Bias Guess"), col=c("blue", "red"), lty=1:1, 
+       cex=0.8)
+```
+
+This is a ROC Curve that shows the bias guess and the model and their positive and false positive rates
+
+Here we can see that model is worse than the bias guess based on the postive and the false positive rates. This along with the confusion matrix and the prediction error shows taht the model is not the greatest when it tested with the small sample size. Especially seen here when compared with the ROC curve to the bias guess and the consistency it has with the prediction of the feedback type.
+
+
+## Prediction Performance:
+
+In order to genuinely test the dataset, we have to use a much larger set of data in order to check the multiple different things that could happen within the experiment and whether or not the model is able to predcit these different outcomes. First, we have to define what the evaluation of the model looks like. Based on the small sample size that was measured we have an understanding of what the model is and how it works based on a very small set of data. Even though we have an insight as to what the model can do, we do not yet have the entirety of the picture, since we were only able to go on 6 different prediction points.
+
+So, in order to determine the evaluation of the model I am going to propose a scale that makes sense based on the previous infomration that we have acquired about the model and the data. This scale is going to be made using the units of prediction error, so the scale will go from 0 to 100 based on the prediction error that we find with the final model based on the test data. Since the the prediction error for the small dataset of 66.7%, I am going to make a range from 100-50 deemed as a not great model because it is something that needs to be improved and there are obviously more variables that need to be added or looked at. the second range is from 49-25, I would consider this the good range as it is seen to be more consistent, but necessarily perfect in terms of the prediction of the data. Lastly, the range of 24-0, would be great as it has a very high accuracy rate for the model and predicting the data.
+```{r, echo = FALSE}
+testData=list()
+for(i in 1:2){
+  testData[[i]]=readRDS(paste('./STA141AProject/Data/test',i,'.rds',sep=''))
+}
+```
+
+```{r, echo = FALSE}
+for(i in 1:2){
+  
+n.test = length(testData[[i]]$feedback_type)
+avg.spikes.all=numeric(n.test)
+
+
+for(j in 1:n.test){
+  spks.test=testData[[i]]$spks[[j]] 
+  total.spikes=apply(spks.test,1,sum)
+  avg.spikes.all[j]=mean(total.spikes)
+  
+}
+testData[[i]]$avg.spks=avg.spikes.all
+
+
+}
+```
+
+```{r, echo = FALSE}
+test.all <- tibble(
+  mouse_name = character(),
+  avg.spks = numeric(),
+  contrast_left = numeric(),
+  contrast_right = numeric(),
+  feedback_type = as.factor(numeric()),
+  session_ID = numeric()
+)
+
+
+for (i in 1:2) {
+  tmp <- testData[[i]] 
+  n.trials <- length(tmp$feedback_type)
+  
+  tester <- tibble(
+    mouse_name = rep(tmp$mouse_name, n.trials),
+    avg.spks = tmp$avg.spks,
+    contrast_left = as.numeric(tmp$contrast_left),
+    contrast_right = as.numeric(tmp$contrast_right),
+    feedback_type = as.factor(tmp$feedback_type),
+    session_ID = rep(i, n.trials) 
+  )
+  
+  test.all <- bind_rows(test.all, tester)
+}
+```
+
+```{r, echo = FALSE}
+
+final_pred <- predict(mod, test.all %>% select(-feedback_type), type = 'response')
+prediction_final <- factor(final_pred > 0.5, labels = c('-1', '1'))
+mean(prediction_final != test.all$feedback_type)
+```
+
+Checking the data, we find that the final model has a prediction error of 34.5%. This would then fall into the category of being a good model based on the previous scale that we have created in order to evaluate this model.
+
+```{r, echo = FALSE}
+cm_final <- confusionMatrix(prediction_final, test.all$feedback_type, dnn = c("Prediction", "Reference"))
+
+plt_final <- as.data.frame(cm_final$table)
+
+ggplot(plt_final, aes(Reference, Prediction, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels=c("-1","1")) +
+        scale_y_discrete(labels=c("-1","1"))
+```
+
+Confusion Matrix for the final model performance based on the test set of data
+
+With this plot we can see the distribution of the predictions that the final model had on the test dataset, we can see that with the top row, which are the correct answers, meaning that the model predicted a success when it was a success and the model predicted it was a failure when it was indeed a failure. In this top row, we see that the bulk of the data falls here, this fall inline with the prediction error as it shows that there was a pretty high accuracy rate for the model. 
+
+## Discussion: 
+After going through the performance analysis of the model by testing it with the dataset, we can see that it is much better compared to the testing done with the small sample size earlier in the report. Earlier in the report, we see that there is a 66.7% error rate in the prediction based on the 6 samples, subsequently this means that it only predicted the model correct 33.3% of the time. On the other hand, based on the larger test set that we tested the model with, we have a much better model. I think that something that would be great to add into the model is brain area, because that is something that we see to have a lot of effect and correlation to other variables in the EDA portion of the report. So, this is one of the changes that I would make to the final model in order to improve it or make it better, in general I would go down the path of thinking about brain area and what that can bring to the table in terms of the model.
+
+## R Appendix:
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+
+```
+
+Conversations with ChatGPT: https://chatgpt.com/share/67d8b435-d410-8002-8643-00f8474a969d
+
